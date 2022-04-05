@@ -1,51 +1,58 @@
+# SPDX-FileCopyrightText: 2021 Serokell <https://serokell.io/>
+#
+# SPDX-License-Identifier: CC0-1.0
+
 {
   inputs = {
-    naersk.url = "github:nmattia/naersk/master";
-    utils.url = "github:numtide/flake-utils";
-    mozillapkgs = {
-      url = "github:mozilla/nixpkgs-mozilla";
+    nixpkgs.url = "github:nixos/nixpkgs";
+    crate2nix = {
+      url = "github:kolloch/crate2nix";
       flake = false;
     };
+    flake-utils.url = "github:numtide/flake-utils";
   };
-  outputs = { self, nixpkgs, utils, naersk, mozillapkgs }:
-    utils.lib.eachDefaultSystem (system:
+
+  outputs = { self, nixpkgs, crate2nix, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = import nixpkgs { inherit system; };
-        mozilla = pkgs.callPackage (mozillapkgs + "/package-set.nix") {};
+        pkgs = nixpkgs.legacyPackages.${system};
+        crateName = "fexample";
 
-        rust = (mozilla.rustChannelOf {
-          channel = "1.59.0";
-          sha256 = "4IUZZWXHBBxcwRuQm9ekOwzc0oNqH/9NkI1ejW7KajU=";
-        }).rust;
+        inherit (import "${crate2nix}/tools.nix" { inherit pkgs; })
+          generatedCargoNix;
 
-        naersk-lib = pkgs.callPackage naersk {
-          cargo = rust;
-          rustc = rust;
+        project = import (generatedCargoNix {
+          name = crateName;
+          src = ./.;
+        }) {
+          inherit pkgs;
+          defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+            librocksdb-sys = attrs: {
+              nativeBuildInputs = with pkgs; [ jemalloc zstd ];
+              buildInputs = with pkgs; [ clang_13 rustfmt ];
+
+              CARGO_CFG_TARGET_FEATURE = "";
+
+              LIBCLANG_PATH = "${pkgs.llvmPackages_13.libclang.lib}/lib";
+              CLANG_PATH = "${pkgs.clang_13}/bin/clang";
+
+              extraLinkFlags = [
+                "-L${pkgs.llvmPackages_13.libclang}/lib"
+                "-L${pkgs.jemalloc}/lib"
+                "-L${pkgs.zstd}/lib"
+              ];
+            };
+          };
         };
-
-        # Хотелось бы указать эту зависимость непосредственно
-        # для rocksdb, а не для всего софта.
-        nativeBuildInputs = with pkgs; [
-          llvmPackages_13.libclang
-          clang_13
-          # Вот это добро не работает, в итоге всё равно пытается
-          # собраться силами GCC. Как задать stdenv не сильно понятно:(
-          llvmPackages_13.llvm.cc
-        ];
       in {
-        defaultPackage = naersk-lib.buildPackage {
-          root = ./.;
-          pname = "fexample";
-          # Вот эта часть выглядит достаточно дичёво, как переписать её по-другому
-          # не очень понятно.
-          preBuild = ''
-            export LIBCLANG_PATH="${pkgs.llvmPackages_13.libclang.lib}/lib";
-            export CLANG_PATH="${pkgs.clang_13}/bin/clang";
-          '';
-        };
+        packages.${crateName} = project.rootCrate.build;
 
-        defaultApp = utils.lib.mkApp {
-            drv = self.defaultPackage."${system}";
+        defaultPackage = self.packages.${system}.${crateName};
+        defaultApp = self.defaultApp.fexample;
+
+        devShell = pkgs.mkShell {
+          inputsFrom = builtins.attrValues self.packages.${system};
+          buildInputs = [ pkgs.cargo pkgs.rust-analyzer pkgs.clippy ];
         };
       });
 }
