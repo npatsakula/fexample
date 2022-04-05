@@ -21,27 +21,20 @@
         naersk-lib = pkgs.callPackage naersk {
           cargo = rust;
           rustc = rust;
+          stdenv = pkgs.llvmPackages_13.stdenv;
+
         };
 
-        # Хотелось бы указать эту зависимость непосредственно
-        # для rocksdb, а не для всего софта.
-        nativeBuildInputs = with pkgs; [
-          llvmPackages_13.libclang
-          clang_13
-          # Вот это добро не работает, в итоге всё равно пытается
-          # собраться силами GCC. Как задать stdenv не сильно понятно:(
-          llvmPackages_13.llvm.cc
-        ];
+        nativeBuildInputs = with pkgs; [ llvmPackages_13.libclang clang_13 ];
       in {
         defaultPackage = naersk-lib.buildPackage {
           root = ./.;
           pname = "fexample";
-          # Вот эта часть выглядит достаточно дичёво, как переписать её по-другому
-          # не очень понятно.
-          preBuild = ''
-            export LIBCLANG_PATH="${pkgs.llvmPackages_13.libclang.lib}/lib";
-            export CLANG_PATH="${pkgs.clang_13}/bin/clang";
-          '';
+
+          override = x: (x // {
+            LIBCLANG_PATH = "${pkgs.llvmPackages_13.libclang.lib}/lib";
+            CLANG_PATH = "${pkgs.clang_13}/bin/clang";
+          });
         };
 
         defaultApp = utils.lib.mkApp {
