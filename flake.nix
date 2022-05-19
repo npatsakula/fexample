@@ -1,36 +1,61 @@
 {
   inputs = {
-    naersk.url = "github:nmattia/naersk/master";
+    nixpkgs.url = "nixpkgs/nixos-unstable";
     utils.url = "github:numtide/flake-utils";
+    crate2nix = { url = "github:kolloch/crate2nix"; flake = false; };
     rust-overlay.url = "github:oxalica/rust-overlay";
   };
-  outputs = { self, nixpkgs, utils, naersk, rust-overlay }:
-    utils.lib.eachDefaultSystem (system:
+  outputs = { self, nixpkgs, utils, crate2nix, rust-overlay }:
+    utils.lib.eachSystem [ utils.lib.system.x86_64-linux ] (system:
       let
-        pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlay ]; };
-        rust = pkgs.rust-bin.stable.latest.default;
+        name = "fexample";
 
-        naersk-lib = pkgs.callPackage naersk {
-          cargo = rust;
+        opkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlay ]; };
+        rust = opkgs.rust-bin.nightly.latest.minimal;
+
+        pkgs = nixpkgs.legacyPackages.${system} // {
           rustc = rust;
-          stdenv = pkgs.llvmPackages_13.stdenv;
+          cargo = rust;
+
+          stdenv = opkgs.llvmPackages_13.stdenv;
+          libcxx = opkgs.llvmPackages_13.libcxx;
         };
 
+        inherit (import "${crate2nix}/tools.nix" { inherit pkgs; }) generatedCargoNix;
+        project = import (generatedCargoNix {
+          name = name;
+          src = ./.;
+        }) {
+          inherit pkgs;
+
+          defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+            librocksdb-sys = attrs: {
+              LIBCLANG_PATH = "${pkgs.llvmPackages_13.libclang.lib}/lib";
+              CARGO_CFG_TARGET_FEATURE = "";
+
+              nativeBuildInputs = with pkgs; [ jemalloc zstd.dev clang_13 ];
+              buildInputs = with pkgs; [ rustfmt ];
+            };
+          };
+        };
       in {
-        defaultPackage = naersk-lib.buildPackage rec {
-          root = ./.;
-          pname = "fexample";
-          version = "0.1.0";
+        packages = {
+          default = self.packages.${system}.foo;
+          foo = project.workspaceMembers.foo.build;
+          bar = project.workspaceMembers.bar.build;
 
-          override = x: (
-              # if x.name == "${pname}-deps-${version}" then
-              x // { LIBCLANG_PATH = "${pkgs.llvmPackages_13.libclang.lib}/lib"; }
-              # else x
-            );
+          docker = let 
+            bin = self.packages.${system}.foo;
+          in pkgs.dockerTools.buildLayeredImage {
+            name = "temp_container";
+            tag = "latest";
+            created = "now";
+
+            contents = bin;
+          };
         };
 
-        defaultApp = utils.lib.mkApp {
-            drv = self.defaultPackage."${system}";
-        };
+        apps.foo = utils.lib.mkApp { drv = self.packages.foo; };
+        apps.bar = utils.lib.mkApp { drv = self.packages.bar; };
       });
 }
